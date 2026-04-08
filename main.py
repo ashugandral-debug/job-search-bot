@@ -1,11 +1,11 @@
 """
 =============================================================
-  AJATYA GANDRAL — JOB SEARCH BOT  |  Main Runner
-  Runs 24/7 on Railway — sends applications, monitors inbox,
-  auto-replies to interviews, sends follow-ups, updates tracker
+  AJATYA GANDRAL — JOB SEARCH BOT
+  Works on GitHub Actions (--once) or Railway (continuous)
 =============================================================
 """
 import os
+import sys
 import time
 import schedule
 from datetime import datetime
@@ -16,6 +16,9 @@ from emailer import (send_email, build_application_email,
                      check_inbox_for_replies, send_interview_reply,
                      send_followup_email)
 from tracker import update_tracker, get_pending_followups
+
+# Read password from env variable OR config file
+GMAIL_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", config.GMAIL_APP_PASSWORD)
 
 PROFILE = {
     "name":        config.YOUR_NAME,
@@ -31,165 +34,148 @@ PROFILE = {
 def now():
     return datetime.now().strftime("%d-%b-%Y %H:%M IST")
 
-# ─────────────────────────────────────────────
-#  📤  SEND PENDING APPLICATIONS
-# ─────────────────────────────────────────────
+# ── Send pending applications ─────────────────────────────
 def send_pending_applications():
     pending = [j for j in config.JOBS if j.get("status") == "pending"]
     if not pending:
-        print(f"[{now()}] ✅ No pending applications.")
+        print("[" + now() + "] No pending applications.")
         return
 
-    print(f"[{now()}] 🚀 Sending {len(pending)} pending applications...")
+    print("[" + now() + "] Sending " + str(len(pending)) + " pending applications...")
     os.makedirs("cvs", exist_ok=True)
 
     for job in pending:
         company = job["company"]
         try:
-            # 1. Generate custom CV
-            print(f"  📄 Generating CV for {company}...")
+            print("  Generating CV for " + company + "...")
             cv_path = generate_cv(job, PROFILE)
             if not cv_path:
-                print(f"  ⚠️  Skipping {company} — CV generation failed")
+                print("  Skipping " + company + " — CV generation failed")
                 continue
 
-            # 2. Build custom email
             subject, body = build_application_email(job, PROFILE)
-
-            # 3. Send email with CV attached
-            send_email(config.YOUR_EMAIL, config.GMAIL_APP_PASSWORD,
+            send_email(config.YOUR_EMAIL, GMAIL_PASSWORD,
                        to=job["hr_email"], subject=subject,
                        body=body, attachment=cv_path)
 
-            # 4. Update tracker
             update_tracker(company, job["hr_email"], job["role"],
-                           status="Sent ✅", notes=f"Applied for {job['role']}")
-
-            # 5. Mark as applied in config (in memory)
+                           status="Sent", notes="Applied for " + job["role"])
             job["status"] = "applied"
-
-            print(f"  ✅ Sent to {company} ({job['hr_email']})")
+            print("  Sent to " + company + " (" + job["hr_email"] + ")")
             time.sleep(4)
 
         except Exception as e:
-            print(f"  ❌ Failed for {company}: {e}")
+            print("  Failed for " + company + ": " + str(e))
             update_tracker(company, job["hr_email"], job["role"],
-                           status="Failed ❌", notes=str(e)[:100])
+                           status="Failed", notes=str(e)[:100])
 
     send_tracker_to_self()
-    print(f"[{now()}] ✅ Applications done!\n")
 
-# ─────────────────────────────────────────────
-#  📥  CHECK INBOX FOR REPLIES
-# ─────────────────────────────────────────────
+# ── Check inbox ───────────────────────────────────────────
 def check_inbox():
-    print(f"[{now()}] 🔍 Checking inbox for replies...")
+    print("[" + now() + "] Checking inbox for replies...")
     applied_jobs = [j for j in config.JOBS if j.get("status") == "applied"]
     if not applied_jobs:
         return
 
     try:
         replies = check_inbox_for_replies(
-            config.YOUR_EMAIL, config.GMAIL_APP_PASSWORD,
+            config.YOUR_EMAIL, GMAIL_PASSWORD,
             applied_jobs, config.INTERVIEW_KEYWORDS
         )
-
         for job, email_data, is_interview in replies:
             company = job["company"]
             subject = email_data["subject"]
-
             if is_interview:
-                print(f"  🎯 INTERVIEW INVITATION from {company}!")
+                print("  INTERVIEW from " + company + "!")
                 send_interview_reply(
-                    config.YOUR_EMAIL, config.GMAIL_APP_PASSWORD,
+                    config.YOUR_EMAIL, GMAIL_PASSWORD,
                     job["hr_email"], company, job["role"],
                     subject, config.YOUR_NAME, config.YOUR_PHONE
                 )
                 update_tracker(company, job["hr_email"], job["role"],
-                               status="Interview Scheduled 🎯",
-                               reply=f"Yes — {datetime.now().strftime('%d-%b-%Y')}",
-                               notes="Interview invite received. Auto-reply sent.")
-                # Alert yourself
-                send_email(config.YOUR_EMAIL, config.GMAIL_APP_PASSWORD,
+                               status="Interview Scheduled",
+                               reply="Yes - " + datetime.now().strftime("%d-%b-%Y"),
+                               notes="Interview invite. Auto-reply sent.")
+                send_email(config.YOUR_EMAIL, GMAIL_PASSWORD,
                            to=config.YOUR_EMAIL,
-                           subject=f"🎯 INTERVIEW CALL from {company}!",
-                           body=f"Ajatya,\n\nYou received an interview invitation from {company}!\n\nSubject: {subject}\n\nAn auto-reply has been sent confirming your availability.\n\nPlease check your inbox and follow up directly if needed.\n\n— Your Job Bot")
+                           subject="INTERVIEW CALL from " + company + "!",
+                           body="Ajatya,\n\nInterview invitation from " + company + "!\n\nSubject: " + subject + "\n\nAuto-reply sent confirming availability.\n\n— Job Bot")
             else:
-                print(f"  📩 Reply from {company}: {subject}")
+                print("  Reply from " + company + ": " + subject)
                 update_tracker(company, job["hr_email"], job["role"],
-                               status="Replied 📩",
-                               reply=f"Yes — {datetime.now().strftime('%d-%b-%Y')}",
-                               notes=f"Reply: {subject[:60]}")
-
+                               status="Replied",
+                               reply="Yes - " + datetime.now().strftime("%d-%b-%Y"),
+                               notes="Reply: " + subject[:60])
         if replies:
             send_tracker_to_self()
-
     except Exception as e:
-        print(f"  ❌ Inbox check error: {e}")
+        print("  Inbox check error: " + str(e))
 
-# ─────────────────────────────────────────────
-#  📬  SEND FOLLOW-UPS
-# ─────────────────────────────────────────────
+# ── Send follow-ups ───────────────────────────────────────
 def send_followups():
-    print(f"[{now()}] 📬 Checking follow-ups...")
+    print("[" + now() + "] Checking follow-ups...")
     due = get_pending_followups()
     for job_data in due:
         try:
             job = next((j for j in config.JOBS if j["company"] == job_data["company"]), job_data)
-            send_followup_email(config.YOUR_EMAIL, config.GMAIL_APP_PASSWORD,
+            send_followup_email(config.YOUR_EMAIL, GMAIL_PASSWORD,
                                 job, config.YOUR_NAME, config.YOUR_PHONE)
             update_tracker(job_data["company"], job_data["hr_email"], job_data["role"],
-                           status="Sent ✅",
+                           status="Sent",
                            followup=datetime.now().strftime("%d-%b-%Y"),
                            notes="Follow-up sent after 5 days")
-            print(f"  📬 Follow-up sent to {job_data['company']}")
+            print("  Follow-up sent to " + job_data["company"])
         except Exception as e:
-            print(f"  ❌ Follow-up error for {job_data['company']}: {e}")
+            print("  Follow-up error: " + str(e))
 
-# ─────────────────────────────────────────────
-#  📊  EMAIL TRACKER TO SELF
-# ─────────────────────────────────────────────
+# ── Email tracker ─────────────────────────────────────────
 def send_tracker_to_self():
     from tracker import TRACKER_FILE
     if not os.path.exists(TRACKER_FILE):
         return
     try:
-        send_email(config.YOUR_EMAIL, config.GMAIL_APP_PASSWORD,
+        send_email(config.YOUR_EMAIL, GMAIL_PASSWORD,
                    to=config.YOUR_EMAIL,
-                   subject=f"📊 Job Tracker Updated — {datetime.now().strftime('%d %b %Y %H:%M')} IST",
-                   body="Hi Ajatya,\n\nYour updated job applications tracker is attached.\n\n— Your Job Search Bot",
+                   subject="Job Tracker Updated - " + datetime.now().strftime("%d %b %Y %H:%M") + " IST",
+                   body="Hi Ajatya,\n\nYour updated job applications tracker is attached.\n\n— Job Search Bot",
                    attachment=TRACKER_FILE)
-        print(f"  📊 Tracker emailed to {config.YOUR_EMAIL}")
+        print("  Tracker emailed to " + config.YOUR_EMAIL)
     except Exception as e:
-        print(f"  ❌ Tracker email error: {e}")
+        print("  Tracker email error: " + str(e))
 
-# ─────────────────────────────────────────────
-#  ▶️  MAIN
-# ─────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────
 if __name__ == "__main__":
-    print("=" * 60)
-    print("  AJATYA GANDRAL — JOB SEARCH BOT STARTING")
-    print("=" * 60)
-    print(f"  Time: {now()}")
-    print(f"  Email: {config.YOUR_EMAIL}")
-    print("=" * 60 + "\n")
+    print("=" * 55)
+    print("  AJATYA GANDRAL - JOB SEARCH BOT")
+    print("=" * 55)
+    print("  Time:  " + now())
+    print("  Email: " + config.YOUR_EMAIL)
+    print("=" * 55)
 
-    # Run immediately on start
-    send_pending_applications()
-    check_inbox()
+    # --once flag = GitHub Actions mode (run once and exit)
+    if "--once" in sys.argv:
+        print("\n  Mode: GitHub Actions (run once)\n")
+        send_pending_applications()
+        check_inbox()
+        send_followups()
+        print("\n  Done!")
 
-    # Schedule recurring tasks
-    schedule.every(config.CHECK_INBOX_EVERY_HOURS).hours.do(check_inbox)
-    schedule.every().day.at(config.TRACKER_EMAIL_TIME).do(send_tracker_to_self)
-    schedule.every().day.at("10:00").do(send_followups)
-    schedule.every().day.at("08:00").do(send_pending_applications)
+    else:
+        # Continuous mode for Railway/server
+        print("\n  Mode: Continuous\n")
+        send_pending_applications()
+        check_inbox()
 
-    print(f"\n[{now()}] ✅ Bot is running!")
-    print(f"  • Inbox check:   every {config.CHECK_INBOX_EVERY_HOURS} hours")
-    print(f"  • New job check: daily at 08:00 IST")
-    print(f"  • Follow-ups:    daily at 10:00 IST")
-    print(f"  • Tracker email: daily at {config.TRACKER_EMAIL_TIME} IST\n")
+        schedule.every(config.CHECK_INBOX_EVERY_HOURS).hours.do(check_inbox)
+        schedule.every().day.at(config.TRACKER_EMAIL_TIME).do(send_tracker_to_self)
+        schedule.every().day.at("10:00").do(send_followups)
+        schedule.every().day.at("08:00").do(send_pending_applications)
 
-    while True:
-        schedule.run_pending()
-        time.sleep(60)
+        print("\n  Bot running continuously...")
+        print("  Inbox check: every " + str(config.CHECK_INBOX_EVERY_HOURS) + " hours")
+        print("  Press CTRL+C to stop.\n")
+
+        while True:
+            schedule.run_pending()
+            time.sleep(60)
