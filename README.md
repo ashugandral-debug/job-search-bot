@@ -11,10 +11,7 @@ Automated job application bot for Planning Engineer roles in Dubai.
 6. Bot sends follow-up emails after 5 days if no reply
 7. Bot emails you the Excel tracker daily at 9 AM IST
 
-## Setup on Railway
 
-1. Set these environment variables in Railway dashboard:
-   - `GMAIL_APP_PASSWORD` — your 16-char Gmail app password
 
 2. Deploy — bot starts automatically
 
