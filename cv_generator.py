@@ -1,9 +1,102 @@
 """
-CV Generator — creates a custom tailored CV as DOCX for each job
+CV Generator — pure Python using python-docx (no Node.js needed)
 """
 import os
-import subprocess
-import json
+from docx import Document
+from docx.shared import Pt, RGBColor, Inches, Cm
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.table import WD_ALIGN_VERTICAL
+from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
+import copy
+
+ACCENT    = RGBColor(0x1F, 0x4E, 0x79)
+WHITE     = RGBColor(0xFF, 0xFF, 0xFF)
+LIGHT_BG  = RGBColor(0xEB, 0xF3, 0xFB)
+GRAY      = RGBColor(0x59, 0x59, 0x59)
+DARK      = RGBColor(0x1A, 0x1A, 0x1A)
+ACCENT2   = RGBColor(0xBD, 0xD7, 0xEE)
+
+
+def _set_cell_bg(cell, hex_color):
+    tc   = cell._tc
+    tcPr = tc.get_or_add_tcPr()
+    shd  = OxmlElement("w:shd")
+    shd.set(qn("w:val"),   "clear")
+    shd.set(qn("w:color"), "auto")
+    shd.set(qn("w:fill"),  hex_color)
+    tcPr.append(shd)
+
+
+def _set_cell_margins(cell, top=80, bottom=80, left=120, right=120):
+    tc   = cell._tc
+    tcPr = tc.get_or_add_tcPr()
+    tcMar = OxmlElement("w:tcMar")
+    for side, val in [("top", top), ("bottom", bottom), ("left", left), ("right", right)]:
+        el = OxmlElement("w:" + side)
+        el.set(qn("w:w"),    str(val))
+        el.set(qn("w:type"), "dxa")
+        tcMar.append(el)
+    tcPr.append(tcMar)
+
+
+def _remove_cell_borders(cell):
+    tc   = cell._tc
+    tcPr = tc.get_or_add_tcPr()
+    tcBorders = OxmlElement("w:tcBorders")
+    for side in ["top", "left", "bottom", "right", "insideH", "insideV"]:
+        el = OxmlElement("w:" + side)
+        el.set(qn("w:val"),   "none")
+        el.set(qn("w:sz"),    "0")
+        el.set(qn("w:space"), "0")
+        el.set(qn("w:color"), "auto")
+        tcBorders.append(el)
+    tcPr.append(tcBorders)
+
+
+def _set_thin_border(cell):
+    tc   = cell._tc
+    tcPr = tc.get_or_add_tcPr()
+    tcBorders = OxmlElement("w:tcBorders")
+    for side in ["top", "left", "bottom", "right"]:
+        el = OxmlElement("w:" + side)
+        el.set(qn("w:val"),   "single")
+        el.set(qn("w:sz"),    "4")
+        el.set(qn("w:space"), "0")
+        el.set(qn("w:color"), "CCCCCC")
+        tcBorders.append(el)
+    tcPr.append(tcBorders)
+
+
+def _add_run(para, text, bold=False, italic=False, size=10,
+             color=None, font="Arial"):
+    run = para.add_run(text)
+    run.bold   = bold
+    run.italic = italic
+    run.font.name  = font
+    run.font.size  = Pt(size)
+    if color:
+        run.font.color.rgb = color
+    return run
+
+
+def _section_header(doc, text):
+    para = doc.add_paragraph()
+    para.paragraph_format.space_before = Pt(10)
+    para.paragraph_format.space_after  = Pt(4)
+    # Bottom border
+    pPr  = para._p.get_or_add_pPr()
+    pBdr = OxmlElement("w:pBdr")
+    bot  = OxmlElement("w:bottom")
+    bot.set(qn("w:val"),   "single")
+    bot.set(qn("w:sz"),    "8")
+    bot.set(qn("w:space"), "2")
+    bot.set(qn("w:color"), "1F4E79")
+    pBdr.append(bot)
+    pPr.append(pBdr)
+    _add_run(para, text.upper(), bold=True, size=11, color=ACCENT)
+    return para
+
 
 def generate_cv(job, profile_data):
     company   = job["company"]
@@ -13,28 +106,21 @@ def generate_cv(job, profile_data):
     filename  = "CV_AjatyaGandral_" + safe_name + ".docx"
     filepath  = os.path.join("cvs", filename)
 
-    summary  = _tailor_summary(profile_data["profile"], role, company, reqs)
-    skills   = _select_skills(profile_data["skills"], reqs)
-    js       = _build_cv_js(profile_data, summary, skills, filename, filepath)
-    js_path  = "cvs/gen_" + safe_name + ".js"
+    summary = _tailor_summary(profile_data["profile"], role, company, reqs)
+    skills  = _select_skills(profile_data["skills"], reqs)
 
-    with open(js_path, "w") as f:
-        f.write(js)
-
-    result = subprocess.run(["node", js_path], capture_output=True, text=True)
-    os.remove(js_path)
-
-    if result.returncode == 0 and os.path.exists(filepath):
+    try:
+        _build_cv(profile_data, summary, skills, filepath)
         print("  CV generated: " + filename)
         return filepath
-    else:
-        print("  CV generation failed: " + result.stderr[:200])
+    except Exception as e:
+        print("  CV generation failed: " + str(e))
         return None
 
 
 def _tailor_summary(base_profile, role, company, requirements):
     reqs_lower = requirements.lower()
-    additions = []
+    additions  = []
     if "claims" in reqs_lower or "fidic" in reqs_lower:
         additions.append("experienced in FIDIC contract management and claims-related documentation")
     if "site" in reqs_lower or "supervision" in reqs_lower:
@@ -42,7 +128,7 @@ def _tailor_summary(base_profile, role, company, requirements):
     if "consultancy" in reqs_lower or "consultant" in reqs_lower:
         additions.append("bringing a consultancy-oriented mindset and multi-level reporting capabilities")
     if "building" in reqs_lower or "construction" in reqs_lower:
-        additions.append("specialising in building construction project scheduling and milestone control")
+        additions.append("specialising in building construction scheduling and milestone control")
     if "recovery" in reqs_lower or "delay" in reqs_lower:
         additions.append("known for proactive delay identification and programme recovery")
     summary = base_profile.strip()
@@ -64,173 +150,146 @@ def _select_skills(all_skills, requirements):
     return (priority + others)[:18]
 
 
-def _build_cv_js(profile_data, summary, skills, filename, filepath):
+def _build_cv(profile_data, summary, skills, filepath):
+    doc = Document()
+
+    # Page margins
+    for section in doc.sections:
+        section.top_margin    = Cm(1.27)
+        section.bottom_margin = Cm(1.27)
+        section.left_margin   = Cm(1.9)
+        section.right_margin  = Cm(1.9)
+
     name        = profile_data["name"]
     email       = profile_data["email"]
     phone       = profile_data["phone"]
     experience  = profile_data["experience"]
     education   = profile_data["education"]
     credentials = profile_data["credentials"]
-    col_w       = 3120
 
-    # Skills rows
-    skills_rows = ""
-    for i in range(0, len(skills), 3):
-        cells = ""
-        for j in range(3):
-            s   = skills[i+j] if i+j < len(skills) else ""
-            txt = ("* " + s) if s else ""
-            cells += (
-                "new TableCell({"
-                "borders:tb,"
-                "width:{size:" + str(col_w) + ",type:WidthType.DXA},"
-                "shading:{fill:'EBF3FB',type:ShadingType.CLEAR},"
-                "margins:{top:60,bottom:60,left:100,right:100},"
-                "children:[new Paragraph({children:[new TextRun({"
-                "text:" + json.dumps(txt) + ","
-                "size:18,font:'Arial'"
-                "})]})]"
-                "}),"
-            )
-        skills_rows += "new TableRow({children:[" + cells + "]}),"
+    # ── Header name bar ──────────────────────────────────────
+    tbl = doc.add_table(rows=1, cols=1)
+    tbl.style = "Table Grid"
+    cell = tbl.cell(0, 0)
+    _set_cell_bg(cell, "1F4E79")
+    _set_cell_margins(cell, 160, 120, 200, 200)
+    _remove_cell_borders(cell)
 
-    # Experience blocks
-    exp_js = ""
+    p1 = cell.paragraphs[0]
+    p1.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    _add_run(p1, name, bold=True, size=22, color=WHITE)
+
+    p2 = cell.add_paragraph()
+    p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    _add_run(p2, "PLANNING ENGINEER", size=13, color=ACCENT2)
+
+    doc.add_paragraph()
+
+    # ── Contact bar ───────────────────────────────────────────
+    tbl2 = doc.add_table(rows=1, cols=1)
+    tbl2.style = "Table Grid"
+    cell2 = tbl2.cell(0, 0)
+    _set_cell_bg(cell2, "EBF3FB")
+    _set_cell_margins(cell2, 80, 80, 200, 200)
+    _remove_cell_borders(cell2)
+
+    pc = cell2.paragraphs[0]
+    pc.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    contact = "Email: " + email + "   |   Phone: " + phone + "   |   UAE Attested Degree   |   Valid Dubai Driving License"
+    _add_run(pc, contact, size=9, color=ACCENT)
+
+    doc.add_paragraph()
+
+    # ── Professional Summary ──────────────────────────────────
+    _section_header(doc, "Professional Summary")
+    sp = doc.add_paragraph()
+    sp.paragraph_format.space_before = Pt(3)
+    sp.paragraph_format.space_after  = Pt(3)
+    _add_run(sp, summary, size=10, color=DARK)
+
+    # ── Core Competencies ─────────────────────────────────────
+    _section_header(doc, "Core Competencies")
+    cols  = 3
+    rows  = (len(skills) + cols - 1) // cols
+    stbl  = doc.add_table(rows=rows, cols=cols)
+    stbl.style = "Table Grid"
+    for i in range(rows):
+        for j in range(cols):
+            idx  = i * cols + j
+            cell = stbl.cell(i, j)
+            txt  = ("* " + skills[idx]) if idx < len(skills) else ""
+            _set_cell_bg(cell, "EBF3FB")
+            _set_cell_margins(cell, 60, 60, 100, 100)
+            _set_thin_border(cell)
+            p = cell.paragraphs[0]
+            _add_run(p, txt, size=9, color=DARK)
+
+    # ── Professional Experience ───────────────────────────────
+    _section_header(doc, "Professional Experience")
     for exp in experience:
-        bullets = ""
+        # Title row
+        etbl = doc.add_table(rows=1, cols=2)
+        etbl.style = "Table Grid"
+        lc = etbl.cell(0, 0)
+        rc = etbl.cell(0, 1)
+        _remove_cell_borders(lc)
+        _remove_cell_borders(rc)
+
+        lp = lc.paragraphs[0]
+        lp.paragraph_format.space_before = Pt(4)
+        _add_run(lp, exp["title"] + " | " + exp["company"], bold=True, size=10, color=DARK)
+
+        rp = rc.paragraphs[0]
+        rp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        rp.paragraph_format.space_before = Pt(4)
+        _add_run(rp, exp["period"], italic=True, size=9, color=GRAY)
+
+        loc_p = doc.add_paragraph()
+        loc_p.paragraph_format.space_before = Pt(0)
+        loc_p.paragraph_format.space_after  = Pt(2)
+        _add_run(loc_p, exp["location"], italic=True, size=9, color=GRAY)
+
         for b in exp["bullets"]:
-            bullets += (
-                "new Paragraph({"
-                "numbering:{reference:'bullets',level:0},"
-                "spacing:{before:40,after:40},"
-                "children:[new TextRun({"
-                "text:" + json.dumps(b) + ","
-                "size:19,font:'Arial',color:'1A1A1A'"
-                "})]}),"
-            )
-        exp_js += (
-            "new Table({"
-            "width:{size:9360,type:WidthType.DXA},"
-            "columnWidths:[6500,2860],"
-            "borders:{top:nb,bottom:nb,left:nb,right:nb,insideH:nb,insideV:nb},"
-            "rows:[new TableRow({children:["
-            "new TableCell({borders:nbs,width:{size:6500,type:WidthType.DXA},"
-            "children:[new Paragraph({children:[new TextRun({"
-            "text:" + json.dumps(exp["title"] + " | " + exp["company"]) + ","
-            "bold:true,size:20,font:'Arial'"
-            "})]})]}),"
-            "new TableCell({borders:nbs,width:{size:2860,type:WidthType.DXA},"
-            "children:[new Paragraph({alignment:AlignmentType.RIGHT,"
-            "children:[new TextRun({"
-            "text:" + json.dumps(exp["period"]) + ","
-            "size:18,italic:true,font:'Arial',color:'595959'"
-            "})]})]}),"
-            "]})]}),"
-            "new Paragraph({spacing:{before:20,after:40},"
-            "children:[new TextRun({"
-            "text:" + json.dumps(exp["location"]) + ","
-            "size:18,italic:true,font:'Arial',color:'595959'"
-            "})]}),"
-            + bullets +
-            "new Paragraph({spacing:{before:80,after:0},children:[new TextRun({text:'',size:18})]}),"
-        )
+            bp = doc.add_paragraph(style="List Bullet")
+            bp.paragraph_format.space_before = Pt(2)
+            bp.paragraph_format.space_after  = Pt(2)
+            bp.paragraph_format.left_indent  = Inches(0.25)
+            _add_run(bp, b, size=9.5, color=DARK)
 
-    # Education blocks
-    edu_js = ""
+        doc.add_paragraph()
+
+    # ── Education ─────────────────────────────────────────────
+    _section_header(doc, "Education")
     for edu in education:
-        edu_js += (
-            "new Paragraph({spacing:{before:60,after:20},"
-            "children:[new TextRun({"
-            "text:" + json.dumps(edu["degree"]) + ","
-            "bold:true,size:20,font:'Arial'"
-            "})]}),"
-            "new Paragraph({spacing:{before:0,after:20},"
-            "children:[new TextRun({"
-            "text:" + json.dumps(edu["institution"] + " | " + edu["period"]) + ","
-            "size:18,italic:true,font:'Arial',color:'595959'"
-            "})]}),"
-            "new Paragraph({spacing:{before:0,after:60},"
-            "children:[new TextRun({"
-            "text:" + json.dumps(edu["focus"]) + ","
-            "size:18,font:'Arial',color:'595959'"
-            "})]}),"
-        )
+        dp = doc.add_paragraph()
+        dp.paragraph_format.space_before = Pt(4)
+        dp.paragraph_format.space_after  = Pt(1)
+        _add_run(dp, edu["degree"], bold=True, size=10, color=DARK)
 
-    # Credentials
-    cred_js = ""
+        ip = doc.add_paragraph()
+        ip.paragraph_format.space_before = Pt(0)
+        ip.paragraph_format.space_after  = Pt(1)
+        _add_run(ip, edu["institution"] + "  |  " + edu["period"], italic=True, size=9, color=GRAY)
+
+        fp = doc.add_paragraph()
+        fp.paragraph_format.space_before = Pt(0)
+        fp.paragraph_format.space_after  = Pt(6)
+        _add_run(fp, edu["focus"], size=9, color=GRAY)
+
+    # ── Credentials ───────────────────────────────────────────
+    _section_header(doc, "Certifications & UAE Credentials")
     for c in credentials:
-        cred_js += (
-            "new Paragraph({"
-            "numbering:{reference:'bullets',level:0},"
-            "spacing:{before:40,after:40},"
-            "children:[new TextRun({"
-            "text:" + json.dumps(c) + ","
-            "size:19,font:'Arial'"
-            "})]}),"
-        )
+        cp = doc.add_paragraph(style="List Bullet")
+        cp.paragraph_format.space_before = Pt(2)
+        cp.paragraph_format.space_after  = Pt(2)
+        cp.paragraph_format.left_indent  = Inches(0.25)
+        _add_run(cp, c, size=9.5, color=DARK)
 
-    contact_line = "Email: " + email + "  |  Phone: " + phone + "  |  UAE Attested Degree  |  Valid Dubai Driving License"
+    # ── Languages ─────────────────────────────────────────────
+    _section_header(doc, "Languages")
+    lp = doc.add_paragraph()
+    _add_run(lp, "English — Professional Working Proficiency (Written & Spoken)   |   Hindi — Native",
+             size=10, color=DARK)
 
-    js = (
-        "const {Document,Packer,Paragraph,TextRun,Table,TableRow,TableCell,"
-        "AlignmentType,BorderStyle,WidthType,ShadingType,LevelFormat} = require('docx');\n"
-        "const fs = require('fs');\n\n"
-        "const nb  = {style:BorderStyle.NONE,size:0,color:'FFFFFF'};\n"
-        "const nbs = {top:nb,bottom:nb,left:nb,right:nb};\n"
-        "const tb  = {\n"
-        "  top:{style:BorderStyle.SINGLE,size:1,color:'CCCCCC'},\n"
-        "  bottom:{style:BorderStyle.SINGLE,size:1,color:'CCCCCC'},\n"
-        "  left:{style:BorderStyle.SINGLE,size:1,color:'CCCCCC'},\n"
-        "  right:{style:BorderStyle.SINGLE,size:1,color:'CCCCCC'}\n"
-        "};\n\n"
-        "function sh(text) {\n"
-        "  return new Paragraph({\n"
-        "    spacing:{before:160,after:60},\n"
-        "    border:{bottom:{style:BorderStyle.SINGLE,size:8,color:'1F4E79',space:2}},\n"
-        "    children:[new TextRun({text:text.toUpperCase(),bold:true,size:22,color:'1F4E79',font:'Arial'})]\n"
-        "  });\n"
-        "}\n\n"
-        "const doc = new Document({\n"
-        "  numbering:{config:[{reference:'bullets',levels:[{\n"
-        "    level:0,format:LevelFormat.BULLET,text:'*',\n"
-        "    alignment:AlignmentType.LEFT,\n"
-        "    style:{paragraph:{indent:{left:400,hanging:300}}}\n"
-        "  }]}]},\n"
-        "  sections:[{\n"
-        "    properties:{page:{size:{width:12240,height:15840},margin:{top:720,right:1080,bottom:720,left:1080}}},\n"
-        "    children:[\n"
-        "      new Table({width:{size:9360,type:WidthType.DXA},columnWidths:[9360],rows:[new TableRow({children:[new TableCell({\n"
-        "        shading:{fill:'1F4E79',type:ShadingType.CLEAR},borders:nbs,\n"
-        "        margins:{top:160,bottom:160,left:200,right:200},\n"
-        "        children:[\n"
-        "          new Paragraph({alignment:AlignmentType.CENTER,children:[new TextRun({text:" + json.dumps(name) + ",bold:true,size:40,font:'Arial',color:'FFFFFF'})]}),\n"
-        "          new Paragraph({alignment:AlignmentType.CENTER,children:[new TextRun({text:'PLANNING ENGINEER',size:24,font:'Arial',color:'BDD7EE'})]})\n"
-        "        ]\n"
-        "      })]})]}),\n"
-        "      new Table({width:{size:9360,type:WidthType.DXA},columnWidths:[9360],rows:[new TableRow({children:[new TableCell({\n"
-        "        shading:{fill:'EBF3FB',type:ShadingType.CLEAR},borders:nbs,\n"
-        "        margins:{top:80,bottom:80,left:200,right:200},\n"
-        "        children:[new Paragraph({alignment:AlignmentType.CENTER,children:[new TextRun({text:" + json.dumps(contact_line) + ",size:17,font:'Arial',color:'1F4E79'})]})]\n"
-        "      })]})]}),\n"
-        "      new Paragraph({spacing:{before:80,after:0},children:[new TextRun({text:''})]}),\n"
-        "      sh('Professional Summary'),\n"
-        "      new Paragraph({spacing:{before:40,after:40},children:[new TextRun({text:" + json.dumps(summary) + ",size:19,font:'Arial',color:'1A1A1A'})]}),\n"
-        "      sh('Core Competencies'),\n"
-        "      new Table({width:{size:9360,type:WidthType.DXA},columnWidths:[" + str(col_w) + "," + str(col_w) + "," + str(col_w) + "],rows:[" + skills_rows + "]}),\n"
-        "      sh('Professional Experience'),\n"
-        + exp_js +
-        "      sh('Education'),\n"
-        + edu_js +
-        "      sh('Certifications & UAE Credentials'),\n"
-        + cred_js +
-        "      sh('Languages'),\n"
-        "      new Paragraph({spacing:{before:40,after:40},children:[new TextRun({text:'English - Professional Working Proficiency  |  Hindi - Native',size:19,font:'Arial'})]}),\n"
-        "    ]\n"
-        "  }]\n"
-        "});\n\n"
-        "Packer.toBuffer(doc).then(buf => {\n"
-        "  fs.writeFileSync(" + json.dumps(filepath) + ", buf);\n"
-        "  console.log('CV created: " + filename + "');\n"
-        "});\n"
-    )
-    return js
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    doc.save(filepath)
